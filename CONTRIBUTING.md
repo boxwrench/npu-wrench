@@ -22,7 +22,10 @@ Measured per-token cost today is listed in the README. In rough order of expecte
    for AIE2P in MLIR-AIR; we know of no open hd128 causal decode-attention kernel.
 5. **Quality.** An 8-bit (or 6-bit) down projection would close most of the gap to llama.cpp
    Q4_K_M (docs/METHOD.md). A paired writer-quality suite is the planned acceptance test.
-6. **Other models.** The stages only depend on the matrix shapes. MiniCPM-V-4.7-35B-A3B
+6. **A multi-row q4nx kernel on the AIE mmul unit.** Repeating the vector GEMV per row is compute-bound
+   past 2 rows (docs/METHOD.md). A 4-row matrix-multiply tile would make speculative verification and
+   batching several memory writes pay off.
+7. **Other models.** The stages only depend on the matrix shapes. MiniCPM-V-4.7-35B-A3B
    (Qwen3.6-MoE: 256 experts x 512, head dim 256) is the next target.
 
 ## Ground rules

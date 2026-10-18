@@ -102,6 +102,16 @@ read. For weights that never change after loading this is pure overhead: skippin
 106.4 to 87.2 ms/token and halved prefill's NPU time. Buffers written and read only by the NPU (the bfp16
 GEMM operands) need neither; host buffers need it only over the rows actually used.
 
+## Speculative decoding: not yet
+
+Two screens, 2026-10-18. **Drafts:** longest-suffix n-gram lookup over the prompt and the reply gives 2.1-2.2
+tokens per verify pass at 4 drafts on two 2K-token memory-extraction dialogues (drafts found on about half
+the passes); lookup over the reply alone gives 1.7-1.8. **Verify cost:** repeating the GEMV's multiply per
+extra row costs 1.1-1.16x at 2 rows but 1.5-1.8x at 4 and ~3x at 8: compute stops hiding behind DMA past 2
+rows. With the MoE touching more distinct experts per extra row, the estimated gain is ~1.1-1.15x, so it is
+parked. What would change it: a multi-row q4nx kernel on the AIE matrix-multiply unit (a 4-row tile),
+which would also make decoding several memory writes together worthwhile.
+
 ## Quality of the 4-bit format
 
 Scored on one MoE layer (layer 1, 32 token rows) against a float64 reference computed from the BF16
