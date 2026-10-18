@@ -101,8 +101,9 @@ class HyMemoryNPU:
         self.bgu, self.bd = [B(1536) for _ in range(9)], [B(D) for _ in range(9)]
         self.bgu3, self.bd3 = [B(3 * 1536) for _ in range(3)], [B(3 * D) for _ in range(3)]
         self.blm = [B(5120) for _ in range(24)]
-        # KV cache laid out for batched matmuls: K as (kv-head, dim, position), V as (kv-head, position, dim)
-        self.Kt = np.zeros((self.NL, NKV, HD, max_ctx), np.float32)
+        # KV cache, position-major per KV head: (layer, kv-head, position, dim). Slicing the first T positions stays
+        # contiguous, so the attention matmuls read it without a copy (K is used transposed).
+        self.Kc = np.zeros((self.NL, NKV, max_ctx, HD), np.float32)
         self.Vh = np.zeros((self.NL, NKV, max_ctx, HD), np.float32)
         inv = theta ** (-np.arange(0, HD, 2, dtype=np.float64) / HD)
         ang = np.arange(max_ctx)[:, None] * inv[None, :]
@@ -153,10 +154,10 @@ class HyMemoryNPU:
             s = time.perf_counter()
             q = self._rope(_rms(qkv[:NH * HD].reshape(NH, HD), L["q_norm"]), pos)
             k = self._rope(_rms(qkv[NH * HD:(NH + NKV) * HD].reshape(NKV, HD), L["k_norm"]), pos)
-            self.Kt[l, :, :, pos] = k
+            self.Kc[l, :, pos, :] = k
             self.Vh[l, :, pos, :] = qkv[(NH + NKV) * HD:].reshape(NKV, HD)
             qg = q.reshape(NKV, NH // NKV, HD) * np.float32(1.0 / np.sqrt(HD))
-            sc = np.matmul(qg, self.Kt[l, :, :, :pos + 1])               # (NKV, G, pos+1)
+            sc = np.matmul(qg, self.Kc[l, :, :pos + 1].transpose(0, 2, 1))  # (NKV, G, pos+1)
             sc -= sc.max(-1, keepdims=True)
             np.exp(sc, out=sc)
             attn = (np.matmul(sc, self.Vh[l, :, :pos + 1]) / sc.sum(-1, keepdims=True)).reshape(NH * HD)
@@ -182,15 +183,20 @@ class HyMemoryNPU:
         self._run([(self.h["q"], [self.blm[j], self.Wlm[j], self.bx]) for j in range(24)])
         return np.concatenate([b.numpy().astype(np.float32) for b in self.blm])[:self.vocab]
 
-    def generate(self, prompt_ids, max_new, stop_ids=()):
-        """Greedy. Returns (generated ids, seconds for the prompt, per-token decode seconds)."""
+    def generate(self, prompt_ids, max_new, stop_ids=(), start=0, hook=None, on_token=None):
+        """Greedy. ``start``: the first ``start`` prompt positions are already in the KV cache (a shared prefix
+        from the previous call). ``hook`` runs before each prefill layer and decode step; ``on_token(id)`` after
+        each generated token. Returns (generated ids, seconds for the prompt, per-token decode seconds)."""
         t0 = time.perf_counter()
-        if self.prefill is not None and len(prompt_ids) > 1:
-            logits = self.prefill.run(prompt_ids)
+        start = min(start, len(prompt_ids) - 1)
+        if self.prefill is not None and len(prompt_ids) - start > 1:
+            logits = self.prefill.run(prompt_ids, start=start, hook=hook)
         else:
             last = len(prompt_ids) - 1
-            for pos, t in enumerate(prompt_ids):
-                logits = self.step(t, pos, logits=pos == last)
+            for pos in range(start, len(prompt_ids)):
+                if hook is not None:
+                    hook()
+                logits = self.step(prompt_ids[pos], pos, logits=pos == last)
         t_prompt = time.perf_counter() - t0
         out, per, pos = [], [], len(prompt_ids)
         for _ in range(max_new):
@@ -198,6 +204,10 @@ class HyMemoryNPU:
             out.append(t)
             if t in stop_ids:
                 break
+            if on_token is not None:
+                on_token(t)
+            if hook is not None:
+                hook()
             s = time.perf_counter()
             logits = self.step(t, pos)
             per.append(time.perf_counter() - s)

@@ -48,8 +48,8 @@ These files are not GGUF and are not loadable by llama.cpp, vLLM or transformers
 <!-- BENCH:START -->
 | Path | Decode tok/s | ms/token |
 |---|---:|---:|
-| NPU, v0.2.1, short context | 12.5 | 80.0 |
-| NPU, v0.2.1, after a 2K-token prompt | 9.5 | 105 |
+| NPU, v0.2.2, short context | 12.6 | 79.5 |
+| NPU, v0.2.2, after a 2K-token prompt | 10.3 | 97 |
 
 | Prompt (NPU prefill, v0.2) | Time |
 |---:|---:|

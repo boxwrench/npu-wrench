@@ -113,29 +113,29 @@ class Prefill:
         self.rt.run_chain(chain)
         self.stats["npu_s"] += time.perf_counter() - s
 
-    def _attention(self, l, q, k, v, T):
-        """Causal GQA over positions 0..T-1 with batched BLAS matmuls, in query blocks so only the
-        lower triangle (plus one block diagonal) is computed."""
+    def _attention(self, l, q, k, v, p0, T):
+        """Causal GQA for new positions p0..T-1 against keys 0..T-1 (0..p0-1 already cached), with batched
+        BLAS matmuls in query blocks so only the lower triangle (plus one block diagonal) is computed."""
         e = self.e
-        G = NH // NKV
-        e.Kt[l, :, :, :T] = k.transpose(1, 2, 0)                 # (NKV, HD, T)
-        e.Vh[l, :, :T] = v.transpose(1, 0, 2)                    # (NKV, T, HD)
-        Kt, Vh = e.Kt[l], e.Vh[l]
-        qh = (q * np.float32(1.0 / np.sqrt(HD))).reshape(T, NKV, G, HD).transpose(1, 2, 0, 3)  # scale folded into q
-        out = np.empty((NKV, G, T, HD), np.float32)
-        for s0 in range(0, T, 256):
-            s1 = min(T, s0 + 256)
-            tb = s1 - s0
+        G, n = NH // NKV, T - p0
+        e.Kc[l, :, p0:T] = k.transpose(1, 0, 2)                  # (NKV, n, HD)
+        e.Vh[l, :, p0:T] = v.transpose(1, 0, 2)                  # (NKV, n, HD)
+        Kc, Vh = e.Kc[l], e.Vh[l]
+        qh = (q * np.float32(1.0 / np.sqrt(HD))).reshape(n, NKV, G, HD).transpose(1, 2, 0, 3)  # scale folded into q
+        out = np.empty((NKV, G, n, HD), np.float32)
+        for s0 in range(0, n, 256):
+            s1 = min(n, s0 + 256)
+            tb, a0, a1 = s1 - s0, p0 + s0, p0 + s1                 # a0, a1: absolute positions
             qb = np.ascontiguousarray(qh[:, :, s0:s1]).reshape(NKV, G * tb, HD)
-            sc = np.matmul(qb, Kt[:, :, :s1]).reshape(NKV, G, tb, s1)  # (NKV, G, Tb, s1)
+            sc = np.matmul(qb, Kc[:, :a1].transpose(0, 2, 1)).reshape(NKV, G, tb, a1)  # (NKV, G, Tb, a1)
             # keys before the block are all visible; only the diagonal block is causal
-            sc[..., s0:s1] += self._tri[:tb, :tb]
+            sc[..., a0:a1] += self._tri[:tb, :tb]
             sc -= sc.max(-1, keepdims=True)
             np.exp(sc, out=sc)
             den = sc.sum(-1, keepdims=True)                              # normalize the output, not P
-            o = np.matmul(sc.reshape(NKV, G * tb, s1), Vh[:, :s1]).reshape(NKV, G, tb, HD)
+            o = np.matmul(sc.reshape(NKV, G * tb, a1), Vh[:, :a1]).reshape(NKV, G, tb, HD)
             out[:, :, s0:s1] = o / den
-        return out.transpose(2, 0, 1, 3).reshape(T, NH * HD)
+        return out.transpose(2, 0, 1, 3).reshape(n, NH * HD)
 
     def _experts(self, l, xn, groups, T):
         """groups: list of (slot, weight-index, row indices, per-row weights or None). Returns sum (T, 2048)."""
@@ -174,13 +174,18 @@ class Prefill:
         self.stats["cpu_s"] += time.perf_counter() - s
         return out
 
-    def run(self, ids):
-        """Fill the KV cache for ``ids`` (positions 0..T-1); returns the last token's logits."""
+    def run(self, ids, start=0, hook=None):
+        """Fill the KV cache for ``ids[start:]`` (positions start..T-1; positions before ``start`` must already be
+        cached, e.g. a shared prompt prefix); returns the last token's logits. ``hook`` runs before every layer
+        (the server uses it to yield to a busy foreground)."""
         e, T = self.e, len(ids)
-        assert T <= self.Tmax
-        Tp = _pad(T)
-        x = np.array(e.embed[ids], np.float32)
-        pos = np.arange(T)
+        start = min(start, T - 1)
+        n = T - start
+        assert n <= self.Tmax
+        Tp = _pad(n)
+        x = np.array(e.embed[ids[start:]], np.float32)
+        pos = np.arange(start, T)
+        rows = np.arange(n)
         cos, sin = e.cos[pos][:, None, :], e.sin[pos][:, None, :]
 
         def rope(t):
@@ -188,29 +193,31 @@ class Prefill:
             return np.concatenate([t[..., :h] * cos - t[..., h:] * sin, t[..., h:] * cos + t[..., :h] * sin], -1)
 
         for l in range(e.NL):
+            if hook is not None:
+                hook()
             L = e.L[l]
             s = time.perf_counter()
-            self._wr(self.Ax, T, _bf(_rms(x, L["input_layernorm"])))
+            self._wr(self.Ax, n, _bf(_rms(x, L["input_layernorm"])))
             self.stats["cpu_s"] += time.perf_counter() - s
             self._run([(self.hd["qkv"], [e.Wqkv[l], self.Bqkv]),
                        (self.hd["o"], [e.Wo[l][0], self.Bo[0]]), (self.hd["o"], [e.Wo[l][1], self.Bo[1]])])
             self._run([(self._g(Tp, 2048, 5120), [self.Ax, self.Bqkv, self.Cqkv])])
             s = time.perf_counter()
-            qkv = self._rd(self.Cqkv, T).astype(np.float32)
-            q = rope(_rms(qkv[:, :NH * HD].reshape(T, NH, HD), L["q_norm"]))
-            k = rope(_rms(qkv[:, NH * HD:(NH + NKV) * HD].reshape(T, NKV, HD), L["k_norm"]))
-            v = qkv[:, (NH + NKV) * HD:].reshape(T, NKV, HD)
-            attn = self._attention(l, q, k, v, T)
-            self._wr(self.Ao[0], T, _bf(attn[:, :2048]))
-            self._wr(self.Ao[1], T, _bf(attn[:, 2048:]))
+            qkv = self._rd(self.Cqkv, n).astype(np.float32)
+            q = rope(_rms(qkv[:, :NH * HD].reshape(n, NH, HD), L["q_norm"]))
+            k = rope(_rms(qkv[:, NH * HD:(NH + NKV) * HD].reshape(n, NKV, HD), L["k_norm"]))
+            v = qkv[:, (NH + NKV) * HD:].reshape(n, NKV, HD)
+            attn = self._attention(l, q, k, v, start, T)
+            self._wr(self.Ao[0], n, _bf(attn[:, :2048]))
+            self._wr(self.Ao[1], n, _bf(attn[:, 2048:]))
             self.stats["cpu_s"] += time.perf_counter() - s
             g = self._g(Tp, 2048, 2048)
             self._run([(g, [self.Ao[0], self.Bo[0], self.Co[0]]), (g, [self.Ao[1], self.Bo[1], self.Co[1]])])
             s = time.perf_counter()
-            x = x + self._rd(self.Co[0], T).astype(np.float32) + self._rd(self.Co[1], T).astype(np.float32)
+            x = x + self._rd(self.Co[0], n).astype(np.float32) + self._rd(self.Co[1], n).astype(np.float32)
             xn = _rms(x, L["post_attention_layernorm"])
             if l == 0:  # dense FFN: 9 width-768 chunks, every row, weight 1
-                groups = [(j, j, pos, None) for j in range(9)]
+                groups = [(j, j, rows, None) for j in range(9)]
             else:
                 p = 1.0 / (1.0 + np.exp(-(xn @ L["router"].T)))                 # (T, 128)
                 ex = np.argsort(-(p + L["bias"]), axis=1)[:, :TOPK]              # bias picks experts only
@@ -221,10 +228,10 @@ class Prefill:
                     r, c = np.nonzero(ex == ei)
                     if len(r):
                         groups.append((ei, ei, r, w[r, c].astype(np.float32)))
-                groups.append((NE, NE, pos, None))                               # shared expert
+                groups.append((NE, NE, rows, None))                              # shared expert
             self.stats["cpu_s"] += time.perf_counter() - s
-            x = x + self._experts(l, xn, groups, T)
-        e.stats["steps"] += T
+            x = x + self._experts(l, xn, groups, n)
+        e.stats["steps"] += n
         np.copyto(e.bx.numpy(), _bf(_rms(x[-1], e.norm)))
         e._run([(e.h["q"], [e.blm[j], e.Wlm[j], e.bx]) for j in range(24)])
         return np.concatenate([b.numpy().astype(np.float32) for b in e.blm])[:e.vocab]

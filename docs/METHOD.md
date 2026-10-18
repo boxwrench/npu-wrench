@@ -129,6 +129,17 @@ even beside a CPU-hungry foreground. What the NPU writer buys today is steadines
 caused a -27 % and a -39 % dip in these runs) and free CPU cores. To win on throughput it needs attention
 on the NPU and faster weight streaming.
 
+## Decode attention on the NPU: not yet
+
+A flash-decoding operator on 2 columns (8 cores: one KV head and half the context each, partials merged on
+the host), built from AMD's open `decode_attn_qk.cc` / `decode_attn_kv.cc` templates: correct (cos 0.999999)
+up to 256 positions, then a deterministic chunk-handoff bug; timing (representative, same data volume) at
+2048 positions 0.385 ms per layer including the merge, against 0.25 ms for the CPU's attention arithmetic.
+It reaches 13 GB/s on 2 columns and would take 2 columns from the GEMV stages. Not integrated. The same
+screen showed the engine's CPU attention spent about twice its arithmetic; a position-major K cache fixed most
+of that (v0.2.2). What would change it: the chunk fix, the merge on a core, and a faster KV stream, so that
+attention can join the one-chain-per-layer fusion.
+
 ## Speculative decoding: not yet
 
 Two screens, 2026-10-18. **Drafts:** longest-suffix n-gram lookup over the prompt and the reply gives 2.1-2.2

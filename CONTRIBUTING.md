@@ -18,8 +18,8 @@ Measured per-token cost today is listed in the README. In rough order of expecte
 3. **NPU prefill.** Prompts currently go through the decode path one token at a time. IRON's
    `flm.GEMM` reaches 9-19 TF on this NPU at M=512-4096, and a grouped-expert prefill was prototyped
    at 0.37 s per MoE layer for an 8K prompt.
-4. **Attention on the NPU.** Attention runs on the CPU. There is open head-dim-128 GQA prefill code
-   for AIE2P in MLIR-AIR; we know of no open hd128 causal decode-attention kernel.
+4. **Attention on the NPU.** Attention runs on the CPU. A first flash-decoding operator is correct to 256
+   positions and 1.5x slower than the CPU at 2K (docs/METHOD.md); MLIR-AIR has open hd128 GQA prefill code.
 5. **Quality.** An 8-bit (or 6-bit) down projection would close most of the gap to llama.cpp
    Q4_K_M (docs/METHOD.md). A paired writer-quality suite is the planned acceptance test.
 6. **A multi-row q4nx kernel on the AIE mmul unit.** Repeating the vector GEMV per row is compute-bound

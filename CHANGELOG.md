@@ -1,3 +1,10 @@
+# v0.2.2 — 2026-10-18
+
+- KV cache stored position-major for K as well (contiguous slices for the attention matmuls): decode after a 2K
+  prompt 105 -> 97 ms/token; short context 79.5 ms. Two 384-token writer outputs identical to v0.2.1; the check
+  prompt now matches llama.cpp on 58 of 64 tokens (was 56: a near-tie flipped with the summation order).
+- docs/METHOD.md: an NPU decode-attention operator was screened and not integrated (slower than the CPU at 2K).
+
 # v0.2.1 — 2026-10-18
 
 - Fix: decode attention used `np.einsum`, whose cost grew with context: ~305 ms/token after a 2K-token prompt.
