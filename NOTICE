@@ -1,0 +1,36 @@
+NOTICE
+
+This repository's code and documentation are released under the Apache License 2.0
+(see LICENSE), copyright (c) 2026 boxwrench. Parts are derived from AMD's IRON and
+mlir-aie projects as noted below; each derived file keeps AMD's copyright line and
+states that it was modified.
+
+IRON (amd/IRON)
+  https://github.com/amd/IRON
+  Apache License 2.0, Copyright (C) 2026 Advanced Micro Devices, Inc.
+  npuwrench/design.py is derived from iron/operators/flm/lm_head/design.py;
+  npuwrench/op.py follows its MLIROperator pattern; npuwrench/layout.py uses
+  iron.operators.flm reference functions. Tested at commit
+  f280ccf787b2e0e5f8d842118345db78d7047649.
+
+mlir-aie (Xilinx/mlir-aie)
+  https://github.com/Xilinx/mlir-aie
+  Apache License 2.0 WITH LLVM-exception, Copyright (C) 2026 Advanced Micro Devices, Inc.
+  npuwrench/q4nx_gemv.cc is derived from aie_kernels/flm_gemma4/q4nx_lm_head.cc and
+  includes aie_kernels/flm_gemma4/q4nx.h (q4nx_accumulate) and
+  aie_kernels/common/activations.h from the installed mlir-aie package; those headers
+  are not redistributed here. Tested with mlir-aie 1.4.4 and llvm-aie 22.0.0.2026092101.
+
+HRX runtime (ROCm/hrx-system, shipped in AMD FastFlow-SDK)
+  https://github.com/ROCm/hrx-system
+  Apache License 2.0. Used at run time (libhrx.so); not redistributed here.
+
+Hy-Memory-30B-A3B (tencent/Hy-Memory-30B-A3B)
+  https://huggingface.co/tencent/Hy-Memory-30B-A3B
+  Apache License 2.0, Copyright Tencent. The packed NPU weights published on Hugging
+  Face are a quantized derivative of this model under the same licence; the model's
+  tokenizer and chat template are redistributed unchanged with them.
+
+llama.cpp (ggml-org/llama.cpp)
+  https://github.com/ggml-org/llama.cpp
+  MIT License. Used only as the reference for the output check; no code is included.

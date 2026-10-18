@@ -1,0 +1,68 @@
+# How the NPU path works, and what we measured on the way
+
+Everything here was measured on one machine: Ryzen AI Max+ 395 (Strix Halo), 128 GB, XDNA2 NPU
+(firmware 1.1.2.65), mlir-aie 1.4.4, IRON `f280ccf`, HRX from AMD FastFlow-SDK. Numbers on Strix
+Point or Kraken Point may differ.
+
+## The kernel: AMD's open fused 4-bit GEMV
+
+mlir-aie ships `q4nx_accumulate` (`aie_kernels/flm_gemma4/q4nx.h`): a matrix-vector product that
+reads 4-bit q4nx weights (blocks of 32 outputs x 256 inputs, a bf16 scale and min per 32 inputs)
+and dequantizes them in tile memory, so no 16-bit copy of the weights is ever written. IRON wraps it
+as `flm/lm_head` (Gemma 4's LM head). We took that operator, removed its RMS norm and softcap, and
+made the column count a parameter: the original requires `vocab % 1024 == 0` because one round is
+8 columns x 4 rows x 32 outputs; with 4 columns a round is 512 outputs.
+
+Decode on a padded GEMM path (one real row in a 256-row tile, weights dequantized to bfp16 first)
+ran at 0.53 s/token for this model. The fused GEMV reads each weight once, at 5 bits.
+
+## One resident program for the whole model
+
+| Finding | Measured | What we did |
+|---|---|---|
+| Switching xclbins (programs) costs ~2-3 ms | two stages as two xclbins: 4.4 ms per token-layer of switching | put every stage in one design |
+| Two handles on the *same* xclbin with different instruction streams alternate for free | -0.001 ms | one xclbin, one instruction stream per stage |
+| Persistent workers on disjoint columns can share a program | gate/up on columns 0-3, down on 4-7 | stage picked by the instruction stream; idle stage waits on its FIFOs |
+| Output size can live in the instruction stream | re-sending the activation each round costs nothing measurable (21.8 GB/s either way) | stage A serves every 2048-input matrix: qkv, o-proj halves, gate+up, LM-head blocks |
+| SiLU(gate)·up can run on the down cores | one chain per layer, no host round trip | prologue in `q4nx_gemv.cc` using `tanh_bf16_v16`, as AMD's `swiglu.cc` |
+
+All shim endpoints of every stage must be passed to the `Runtime`, or the unused stage fails with
+`Prod endpoint not set`. Two input widths in one program need distinct kernel symbols (the `.cc` is
+built with a `-DEXPERT_GEMV_SUFFIX`).
+
+## Where the time goes
+
+| Item | Measured |
+|---|---|
+| Fixed cost per chained HRX dispatch | ~18 us (single dispatch 66 us) |
+| Weight streaming, 4 columns, one MM2S channel each | ~22 GB/s on 9-expert chains, 28 GB/s on one large matrix |
+| Same, 2 columns | 16 GB/s |
+| Same program with the multiply skipped on the cores | identical time: the GEMV is data-movement bound |
+| Buffer arguments per dispatch | about 5 (with 9 weight buffers only the first 3 arrive; no error is raised) |
+
+So the levers are fewer dispatches and more DMA throughput, not core compute.
+
+## Quality of the 4-bit format
+
+Scored on one MoE layer (layer 1, 32 token rows) against a float64 reference computed from the BF16
+weights, same inputs and router:
+
+| Weights | Routed output error (median rel. L2) |
+|---|---:|
+| llama.cpp Q4_K_M (down in Q6_K) | 6.7 % |
+| q4nx, plain min/max encoder | 10.4 % |
+| q4nx, least-squares scale/min search (shipped) | 8.8 % |
+| + activation-weighted search | 8.6 % |
+| + BF16 down (upper bound for a higher-precision down) | 6.2 % |
+
+The kernel itself adds almost nothing (live NPU output matches a CPU emulation of the same weights).
+Most of the remaining gap to Q4_K_M is the 4-bit down projection.
+
+## Pitfalls
+
+- `amdxdna ... Alloc hw resource failed` (errno 22) appeared when one chain touched many distinct
+  executables; HRX caches 16 executables per process by default. The one-program design avoids it.
+- Strix Halo: hold the GPU fabric clock at its top level while the GPU and NPU are both active
+  (reported by Halogen; we run with it held). Do not raise NPU AXI QoS.
+- `pytest` collection in IRON skips AIE2P tests without a device bound; call the test functions
+  directly. HRX needs `NPU_RUNTIME=hrx`.

@@ -1,0 +1,4 @@
+[
+  {"role": "system", "content": "Extract durable facts about the user from the conversation as a JSON list of short statements. Store only what is worth remembering."},
+  {"role": "user", "content": "I moved from Lisbon to Oslo last spring for a job at a shipping company. My partner Ana still lives in Lisbon, so I fly back every second weekend. I am allergic to peanuts, and I started learning Norwegian in September."}
+]
