@@ -1,3 +1,11 @@
+# v0.2.1 — 2026-10-18
+
+- Fix: decode attention used `np.einsum`, whose cost grew with context: ~305 ms/token after a 2K-token prompt.
+  The KV cache is now laid out for batched matmuls: 105 ms/token after 2K tokens, 80.0 ms at short context
+  (was 87.2). Check prompt still 56/64; one 384-token writer output identical, another identical for 124
+  tokens then a near-tie greedy flip from the changed summation order.
+- README: decode speed reported at short and long context; v0.2's 87 ms was short-context only.
+
 # v0.2 — 2026-10-18
 
 - NPU prefill (`--prefill N`): batched prompt processing with IRON's DequantBFP reading the decode weights in

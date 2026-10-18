@@ -38,8 +38,9 @@ synthetic dialogue, two runs each (spread under 1.5 %).
 <!-- BENCH:START -->
 | Path | Decode tok/s | ms/token | Matching tokens vs llama.cpp Q4_K_M |
 |---|---:|---:|---:|
-| NPU, v0.2 (3 experts per dispatch) | **11.5** | **87.2** | 56 of 64 |
-| NPU, v0.1 | 9.4 | 106.4 | 56 of 64 |
+| NPU, v0.2.1, short context (check prompt) | **12.5** | **80.0** | 56 of 64 |
+| NPU, v0.2.1, after a 2K-token prompt | **9.5** | **105** | — |
+| NPU, v0.1, short context | 9.4 | 106.4 | 56 of 64 |
 | CPU sidecar for comparison (llama.cpp, 3 threads at idle priority, beside an iGPU model) | 3.9 | 256 | — |
 
 | Prompt (prefill) | NPU prefill, v0.2 | of which NPU / CPU | Token by token (v0.1) |
@@ -47,8 +48,9 @@ synthetic dialogue, two runs each (spread under 1.5 %).
 | 512 tokens | 7.1 s (72 tok/s) | 4.6 / 2.5 s | ~54 s |
 | 2048 tokens | **18.0 s (114 tok/s)** | 5.3 / 12.7 s | ~212 s |
 
-A 2K-token memory-writer span with a 300-token reply takes about 44 s, against about 80 s for the 3-thread
-CPU sidecar. Prompt processing alone is still slower than llama.cpp's CPU prefill (~580 tok/s with 3
+A 2K-token memory-writer span with a 300-token reply takes about 50 s, against about 80 s for the 3-thread
+CPU sidecar (whose 3.9 tok/s was also measured after a long prompt). v0.2 reported 87 ms/token measured at a
+short context only; its decode attention slowed to ~305 ms/token after a 2K prompt, fixed in v0.2.1. Prompt processing alone is still slower than llama.cpp's CPU prefill (~580 tok/s with 3
 threads) because attention runs on the CPU; an NPU attention kernel is the next lever.
 <!-- BENCH:END -->
 
@@ -84,6 +86,8 @@ error is 8.8 % against llama.cpp Q4_K_M's 6.7 %, mostly from the 4-bit down proj
   multiplies; experts run on just the tokens routed to them. No second copy of the weights.
 - **No needless cache flushes.** HRX flushes every argument buffer before a dispatch; weights never
   change after loading, so their flush is skipped (decode 106 -> 87 ms/token).
+- **Attention as batched matmuls.** The KV cache is stored as (head, dim, position) for K and (head,
+  position, dim) for V, so decode and prefill attention are BLAS matmuls; only the diagonal block is masked.
 
 [docs/METHOD.md](docs/METHOD.md) has the measured costs (dispatch, switching, streaming rate, buffer
 limits) and the pitfalls.

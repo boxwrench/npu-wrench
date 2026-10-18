@@ -101,8 +101,9 @@ class HyMemoryNPU:
         self.bgu, self.bd = [B(1536) for _ in range(9)], [B(D) for _ in range(9)]
         self.bgu3, self.bd3 = [B(3 * 1536) for _ in range(3)], [B(3 * D) for _ in range(3)]
         self.blm = [B(5120) for _ in range(24)]
-        self.K = np.zeros((self.NL, max_ctx, NKV, HD), np.float32)
-        self.V = np.zeros_like(self.K)
+        # KV cache laid out for batched matmuls: K as (kv-head, dim, position), V as (kv-head, position, dim)
+        self.Kt = np.zeros((self.NL, NKV, HD, max_ctx), np.float32)
+        self.Vh = np.zeros((self.NL, NKV, max_ctx, HD), np.float32)
         inv = theta ** (-np.arange(0, HD, 2, dtype=np.float64) / HD)
         ang = np.arange(max_ctx)[:, None] * inv[None, :]
         self.cos, self.sin = np.cos(ang).astype(np.float32), np.sin(ang).astype(np.float32)
@@ -152,12 +153,13 @@ class HyMemoryNPU:
             s = time.perf_counter()
             q = self._rope(_rms(qkv[:NH * HD].reshape(NH, HD), L["q_norm"]), pos)
             k = self._rope(_rms(qkv[NH * HD:(NH + NKV) * HD].reshape(NKV, HD), L["k_norm"]), pos)
-            self.K[l, pos], self.V[l, pos] = k, qkv[(NH + NKV) * HD:].reshape(NKV, HD)
-            Kc, Vc = self.K[l, :pos + 1], self.V[l, :pos + 1]
-            sc = np.einsum("hgd,thd->hgt", q.reshape(NKV, NH // NKV, HD), Kc) / np.sqrt(HD)
-            sc = np.exp(sc - sc.max(-1, keepdims=True))
-            sc /= sc.sum(-1, keepdims=True)
-            attn = np.einsum("hgt,thd->hgd", sc, Vc).reshape(NH * HD)
+            self.Kt[l, :, :, pos] = k
+            self.Vh[l, :, pos, :] = qkv[(NH + NKV) * HD:].reshape(NKV, HD)
+            qg = q.reshape(NKV, NH // NKV, HD) * np.float32(1.0 / np.sqrt(HD))
+            sc = np.matmul(qg, self.Kt[l, :, :, :pos + 1])               # (NKV, G, pos+1)
+            sc -= sc.max(-1, keepdims=True)
+            np.exp(sc, out=sc)
+            attn = (np.matmul(sc, self.Vh[l, :, :pos + 1]) / sc.sum(-1, keepdims=True)).reshape(NH * HD)
             self.stats["cpu_s"] += time.perf_counter() - s
             np.copyto(self.ba[0].numpy(), _bf(attn[:2048]))
             np.copyto(self.ba[1].numpy(), _bf(attn[2048:]))

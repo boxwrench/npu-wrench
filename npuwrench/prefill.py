@@ -117,10 +117,10 @@ class Prefill:
         """Causal GQA over positions 0..T-1 with batched BLAS matmuls, in query blocks so only the
         lower triangle (plus one block diagonal) is computed."""
         e = self.e
-        e.K[l, :T], e.V[l, :T] = k, v
         G = NH // NKV
-        Kt = np.ascontiguousarray(k.transpose(1, 2, 0))          # (NKV, HD, T)
-        Vh = np.ascontiguousarray(v.transpose(1, 0, 2))          # (NKV, T, HD)
+        e.Kt[l, :, :, :T] = k.transpose(1, 2, 0)                 # (NKV, HD, T)
+        e.Vh[l, :, :T] = v.transpose(1, 0, 2)                    # (NKV, T, HD)
+        Kt, Vh = e.Kt[l], e.Vh[l]
         qh = (q * np.float32(1.0 / np.sqrt(HD))).reshape(T, NKV, G, HD).transpose(1, 2, 0, 3)  # scale folded into q
         out = np.empty((NKV, G, T, HD), np.float32)
         for s0 in range(0, T, 256):
