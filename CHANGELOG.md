@@ -1,3 +1,9 @@
+# v0.1.2 — 2026-10-18
+
+- Fix: the activation's DMA task is freed with its round, so a dispatch is no longer capped near 10 rounds by the
+  shim's 16 buffer descriptors. Output and speed unchanged (56/64 matching, 106.9 ms/token).
+- docs/METHOD.md: per-token time breakdown, and the streaming experiments that did not help.
+
 # v0.1.1 — 2026-10-18
 
 - README: NPU map graphic, linked to the full measured map in REM and the xdna-top envelope.

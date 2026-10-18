@@ -42,6 +42,40 @@ built with a `-DEXPERT_GEMV_SUFFIX`).
 
 So the levers are fewer dispatches and more DMA throughput, not core compute.
 
+## Where a decode token goes (v0.1, 3 experts per dispatch)
+
+| Part | ms | Weights read | Effective rate |
+|---|---:|---:|---:|
+| MoE (47 layers + the dense first layer) | 54.4 | ~1.27 GB | 23.5 GB/s |
+| o-proj (two halves per layer) | 15.5 | 252 MB | 16 GB/s |
+| qkv | 15.0 | 315 MB | 21 GB/s |
+| LM head | 5.4 | 155 MB | 29 GB/s |
+| CPU attention + router | 8.0 | | |
+| Other host work (Python) | 4.9 | | |
+| **Total** | **103** | ~2.0 GB | |
+
+## What did not raise the streaming rate
+
+All on random weights, same program, chains of 9 experts; the control was repeated to get the floor
+(about 1 %).
+
+| Change | gate/up x9 | down x9 | Verdict |
+|---|---:|---:|---|
+| Control (FIFO depth 2, 2 DMA tasks in flight) | 0.815-0.829 ms | 0.550-0.563 ms | |
+| 4 DMA tasks in flight | 0.815 | 0.549 | within noise |
+| FIFO depth 3 | — | — | does not compile: the memory tile runs out of BD ids (24 per channel) with a 4-way row split |
+| 2-4 weight blocks per core handshake | 0.855-0.915 | 0.580 | slower |
+| 6 or 8 columns instead of 4 (earlier) | ~5 % faster | ~3 % faster | small |
+
+The core is not waiting on locks or on DMA tasks in flight, and adding columns barely helps, so the
+limit looks like a shared NPU-to-memory ceiling of about 22-28 GB/s for this access pattern. Getting
+toward the ~45-52 GB/s that public W4 GEMV work implies (TileFuse, Point/Kraken) likely needs a
+different weight path, not tuning of this one.
+
+- **Shim BD budget.** A shim tile has 16 buffer descriptors. Re-sending the activation every round
+  must free each round's activation transfer with that round's task group; holding them to the end
+  of the dispatch caps a dispatch at about 10 rounds (fixed in v0.1.2).
+
 ## Quality of the 4-bit format
 
 Scored on one MoE layer (layer 1, 32 token rows) against a float64 reference computed from the BF16

@@ -93,11 +93,11 @@ def uni_gemv(dev, which, n_out, wdepth=2, win=2, *, kerns):
 
     def sequence(Y, W, X, ax, aw, ay, dx, dw, dy):
         x_prod, w_prods, y_conses = (ax, aw, ay) if which == "A" else (dx, dw, dy)
-        window, xs = [], []
+        window = []
         for rnd in range(rounds):
-            if rnd % S["rpx"] == 0:
-                xs.append(x_prod.fill(X, wait=False, managed=False))
             tg = TaskGroup()
+            if rnd % S["rpx"] == 0:  # freed with this round's group (the shim has 16 BDs)
+                x_prod.fill(X, wait=False, group=tg)
             for c in range(COLS):
                 i = rnd * COLS + c
                 y_conses[c].drain(Y, y_taps[i], wait=True, group=tg)
@@ -107,8 +107,6 @@ def uni_gemv(dev, which, n_out, wdepth=2, win=2, *, kerns):
                 window.pop(0).finish()
         for tg in window:
             tg.finish()
-        for t in xs:
-            t.free()
 
     rt = Runtime(sequence, [y_ty, w_ty, x_ty] + A["eps"] + Dd["eps"])
     return Program(dev, rt, workers=A["workers"] + Dd["workers"]).resolve_program()
@@ -136,12 +134,12 @@ def uni_multi(dev, which, n_out, E, wdepth=2, win=2, *, kerns):
     def sequence(Y, X, *rest):
         Ws = rest[:E]; ax, aw, ay, dx, dw, dy = rest[E:]
         x_prod, w_prods, y_conses = (ax, aw, ay) if which == "A" else (dx, dw, dy)
-        window, xs = [], []
+        window = []
         for e in range(E):
             for rnd in range(rounds):
-                if rnd % S["rpx"] == 0:
-                    xs.append(x_prod.fill(X, xt[e], wait=False, managed=False))
                 tg = TaskGroup()
+                if rnd % S["rpx"] == 0:
+                    x_prod.fill(X, xt[e], wait=False, group=tg)
                 for c in range(COLS):
                     i = rnd * COLS + c
                     y_conses[c].drain(Y, yt[e][i], wait=True, group=tg)
@@ -151,8 +149,6 @@ def uni_multi(dev, which, n_out, E, wdepth=2, win=2, *, kerns):
                     window.pop(0).finish()
         for tg in window:
             tg.finish()
-        for t in xs:
-            t.free()
 
     rt = Runtime(sequence, [y_ty, x_ty] + [w_ty] * E + A["eps"] + Dd["eps"])
     return Program(dev, rt, workers=A["workers"] + Dd["workers"]).resolve_program()
