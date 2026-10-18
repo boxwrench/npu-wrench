@@ -20,8 +20,7 @@ running every linear layer on the AMD XDNA2 NPU (Ryzen AI Max / Strix Halo; Stri
 Point untested). The runtime, packer and measurements are at [boxwrench/npu-wrench](https://github.com/boxwrench/npu-wrench).
 
 > **Status, 2026-10-18: early release.** Decode runs end to end and matches llama.cpp's greedy output
-> on the check prompt. Prompt processing still goes through the decode path, and attention runs on
-> the CPU.
+> on the check prompt. v0.2 adds NPU prompt processing (prefill); attention runs on the CPU.
 
 ## Base model
 
@@ -49,7 +48,12 @@ These files are not GGUF and are not loadable by llama.cpp, vLLM or transformers
 <!-- BENCH:START -->
 | Path | Decode tok/s | ms/token |
 |---|---:|---:|
-| NPU, 3 experts per dispatch | 9.4 | 106.4 |
+| NPU, v0.2 (3 experts per dispatch) | 11.5 | 87.2 |
+
+| Prompt (NPU prefill, v0.2) | Time |
+|---:|---:|
+| 512 tokens | 7.1 s |
+| 2048 tokens | 18.0 s |
 <!-- BENCH:END -->
 
 Greedy, 64 generated tokens after a 63-token prompt. Receipt and method in the GitHub repository.
@@ -65,7 +69,8 @@ from the 4-bit down projection. A task-level writer evaluation has not been run 
 ```sh
 git clone https://github.com/boxwrench/npu-wrench
 hf download boxwrench/Hy-Memory-30B-A3B-q4nx-wrench --local-dir ./Hy-Memory-30B-A3B-q4nx-wrench
-python tools/run.py --weights ./Hy-Memory-30B-A3B-q4nx-wrench --chat examples/extract.json --max-new 256
+python tools/run.py --weights ./Hy-Memory-30B-A3B-q4nx-wrench --chat examples/extract.json --max-new 256 \
+    --experts-per-dispatch 3 --prefill 4096
 ```
 
 Setup (mlir-aie, IRON, HRX) is in the repository README.
