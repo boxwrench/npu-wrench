@@ -115,10 +115,19 @@ three reps per run; GPU fabric clock held. The writer runs at idle CPU priority 
 | NPU writer, full writes in a loop | -4.3 % | -6.1 % | 53-57 s (47 s alone) |
 | llama.cpp Hy-Memory Q4_K_M on 3 CPU threads, same writes | -3.3 % (one run -27 %) | -4.8 % | 46 s |
 
+Same test with a CPU-hungry foreground (`-ncmoe 20`: half the MoE layers on 16 CPU threads; pp1024 + tg64):
+
+| Beside the foreground | Prefill | Decode | Writer, per write |
+|---|---:|---:|---:|
+| Nothing (5 runs; spread 0.3 % / 1.7 %) | 1254.1 tok/s | 52.93 tok/s | — |
+| NPU writer, full writes (10 runs) | -4.1 % | -5.2 % (49.3-50.8) | 52-58 s |
+| CPU writer, 3 threads (10 runs) | -4.4 % | -5.6 % (one run -39 %) | 31-43 s |
+
 Both writers stream a similar ~15-19 GB/s from the shared memory, so both cost a memory-bound iGPU decode a
-few percent. Beside a GPU-only foreground with idle CPU cores, the CPU path is as fast or faster. The NPU
-writer's advantage is that its decode needs almost no CPU: beside a foreground that keeps the CPU busy, a
-3-thread CPU writer slowed to 3.9 tok/s in an earlier test (a CPU-heavy engine, not re-run here).
+few percent on average. On this machine an idle-priority 3-thread CPU writer is still faster per write,
+even beside a CPU-hungry foreground. What the NPU writer buys today is steadiness (no stalls; the CPU writer
+caused a -27 % and a -39 % dip in these runs) and free CPU cores. To win on throughput it needs attention
+on the NPU and faster weight streaming.
 
 ## Speculative decoding: not yet
 

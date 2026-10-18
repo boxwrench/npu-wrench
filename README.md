@@ -50,9 +50,9 @@ synthetic dialogue, two runs each (spread under 1.5 %).
 
 A 2K-token memory-writer span with a 300-token reply takes about 50 s, against about 80 s for the 3-thread
 CPU sidecar (whose 3.9 tok/s was also measured after a long prompt). v0.2 reported 87 ms/token measured at a
-short context only; its decode attention slowed to ~305 ms/token after a 2K prompt, fixed in v0.2.1. Beside a GPU-only llama.cpp foreground the NPU writer costs it about 6 % decode, and a 3-thread CPU writer
-is as fast there; the NPU path pays off when the CPU is busy (see docs/METHOD.md, "Running beside an iGPU
-model"). Prompt processing alone is still slower than llama.cpp's CPU prefill (~580 tok/s with 3
+short context only; its decode attention slowed to ~305 ms/token after a 2K prompt, fixed in v0.2.1. Beside a llama.cpp foreground on the iGPU the NPU writer costs it 5-6 % decode, steadily; an idle-priority
+3-thread CPU writer costs about the same on average, with occasional stalls, and is faster per write today
+(docs/METHOD.md, "Running beside an iGPU model"). Prompt processing alone is still slower than llama.cpp's CPU prefill (~580 tok/s with 3
 threads) because attention runs on the CPU; an NPU attention kernel is the next lever.
 <!-- BENCH:END -->
 
