@@ -102,6 +102,24 @@ read. For weights that never change after loading this is pure overhead: skippin
 106.4 to 87.2 ms/token and halved prefill's NPU time. Buffers written and read only by the NPU (the bfp16
 GEMM operands) need neither; host buffers need it only over the rows actually used.
 
+## Running beside an iGPU model
+
+Foreground: llama.cpp (HIP, all layers on the iGPU), MiniCPM-V-4.7-35B-A3B Q4_K_M, `llama-bench -p 2048 -n 128`,
+three reps per run; GPU fabric clock held. The writer runs at idle CPU priority with 3 BLAS threads.
+
+| Beside the foreground | Prefill | Decode | Writer, per 2K-in / 300-out write |
+|---|---:|---:|---:|
+| Nothing (6 runs; spread 0.5 % / 0.1 %) | 1620.8 tok/s | 67.86 tok/s | — |
+| NPU writer resident, idle | +0.1 % | 0.0 % | — |
+| NPU writer decoding continuously | -4.7 % | -6.7 % | — |
+| NPU writer, full writes in a loop | -4.3 % | -6.1 % | 53-57 s (47 s alone) |
+| llama.cpp Hy-Memory Q4_K_M on 3 CPU threads, same writes | -3.3 % (one run -27 %) | -4.8 % | 46 s |
+
+Both writers stream a similar ~15-19 GB/s from the shared memory, so both cost a memory-bound iGPU decode a
+few percent. Beside a GPU-only foreground with idle CPU cores, the CPU path is as fast or faster. The NPU
+writer's advantage is that its decode needs almost no CPU: beside a foreground that keeps the CPU busy, a
+3-thread CPU writer slowed to 3.9 tok/s in an earlier test (a CPU-heavy engine, not re-run here).
+
 ## Speculative decoding: not yet
 
 Two screens, 2026-10-18. **Drafts:** longest-suffix n-gram lookup over the prompt and the reply gives 2.1-2.2
