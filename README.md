@@ -4,9 +4,9 @@ Local-AI work on the AMD Ryzen AI (XDNA2) NPU, built on AMD's open NPU stack. Th
 whole 30B MoE model's decode on the NPU of a Strix Halo.
 
 > **Status, 2026-10-18: early release.** Hy-Memory-30B-A3B runs end to end on the AMD XDNA2 NPU and
-> matches llama.cpp's greedy output on our check prompt. Decode is the focus; prompts still go through
-> the decode path one token at a time, and attention runs on the CPU. Speed work is ongoing and help
-> is welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
+> matches llama.cpp's greedy output on our check prompt. v0.2 adds batched prompt processing (prefill) on
+> the NPU. Attention still runs on the CPU. Speed work is ongoing and help is welcome: see
+> [CONTRIBUTING.md](CONTRIBUTING.md).
 
 This runs [tencent/Hy-Memory-30B-A3B](https://huggingface.co/tencent/Hy-Memory-30B-A3B), a 30B-total,
 3B-active MoE trained to write long-term memories for agents, on the NPU of an AMD Ryzen AI Max+ 395
@@ -32,15 +32,24 @@ The same envelope from the telemetry side is in xdna-top:
 ## Results, one Strix Halo
 
 Greedy decode, one prompt of 63 tokens (a memory-extraction turn, `examples/check_prompt.txt`), 64 generated tokens.
-Median ms/token of three runs per row; the runs spread by 1.1 % and 0.8 %. Of each token, about 90 ms is NPU time
-and 10 ms is CPU attention and routing.
+Median ms/token of repeated runs (spread under 1.5 %). Prefill from the first 512 / 2048 tokens of a public
+synthetic dialogue, two runs each (spread under 1.5 %).
 
 <!-- BENCH:START -->
 | Path | Decode tok/s | ms/token | Matching tokens vs llama.cpp Q4_K_M |
 |---|---:|---:|---:|
-| NPU, 1 expert per dispatch | 8.3 | 120.0 | 56 of 64 |
-| NPU, 3 experts per dispatch | **9.4** | **106.4** | 56 of 64 |
+| NPU, v0.2 (3 experts per dispatch) | **11.5** | **87.2** | 56 of 64 |
+| NPU, v0.1 | 9.4 | 106.4 | 56 of 64 |
 | CPU sidecar for comparison (llama.cpp, 3 threads at idle priority, beside an iGPU model) | 3.9 | 256 | — |
+
+| Prompt (prefill) | NPU prefill, v0.2 | of which NPU / CPU | Token by token (v0.1) |
+|---:|---:|---:|---:|
+| 512 tokens | 7.1 s (72 tok/s) | 4.6 / 2.5 s | ~54 s |
+| 2048 tokens | **18.0 s (114 tok/s)** | 5.3 / 12.7 s | ~212 s |
+
+A 2K-token memory-writer span with a 300-token reply takes about 44 s, against about 80 s for the 3-thread
+CPU sidecar. Prompt processing alone is still slower than llama.cpp's CPU prefill (~580 tok/s with 3
+threads) because attention runs on the CPU; an NPU attention kernel is the next lever.
 <!-- BENCH:END -->
 
 <!-- RECEIPT:START -->
@@ -70,6 +79,11 @@ error is 8.8 % against llama.cpp Q4_K_M's 6.7 %, mostly from the 4-bit down proj
   gate+up (1536), the dense first layer as 9 chunks, the LM head as 24 blocks.
 - **CPU side.** RMS norms, NEOX RoPE, GQA attention over the KV cache and the sigmoid router with
   selection bias, in numpy.
+- **Prefill.** The whole prompt goes through each layer at once. IRON's `DequantBFP`, with its input
+  pattern changed to read the decode weights in place, writes the bfp16 operand that IRON's `flm.GEMM`
+  multiplies; experts run on just the tokens routed to them. No second copy of the weights.
+- **No needless cache flushes.** HRX flushes every argument buffer before a dispatch; weights never
+  change after loading, so their flush is skipped (decode 106 -> 87 ms/token).
 
 [docs/METHOD.md](docs/METHOD.md) has the measured costs (dispatch, switching, streaming rate, buffer
 limits) and the pitfalls.
@@ -88,7 +102,8 @@ You need an XDNA2 NPU with the `amdxdna` driver, Python 3.12, and:
 hf download boxwrench/Hy-Memory-30B-A3B-q4nx-wrench --local-dir ./Hy-Memory-30B-A3B-q4nx-wrench         # ~19.5 GB
 export PYTHONPATH=/path/to/IRON LIBHRX_DIR=/path/to/hrx/lib NPU_RUNTIME=hrx
 ulimit -n 65536                                           # one buffer per weight matrix
-python tools/run.py --weights ./Hy-Memory-30B-A3B-q4nx-wrench --chat examples/extract.json --max-new 256
+python tools/run.py --weights ./Hy-Memory-30B-A3B-q4nx-wrench --chat examples/extract.json --max-new 256 \
+    --experts-per-dispatch 3 --prefill 4096                # NPU prefill for prompts up to 4096 tokens
 ```
 
 The first run compiles the NPU program (about 15 s, cached in `./build`). Loading the weights onto

@@ -28,11 +28,13 @@ def main():
     ap.add_argument("--n", type=int, default=64)
     ap.add_argument("--min-prefix", type=int, default=32)
     ap.add_argument("--experts-per-dispatch", type=int, default=1, choices=(1, 3))
+    ap.add_argument("--prefill", type=int, default=0, help="max prompt tokens for NPU prefill (0 = token by token)")
     ap.add_argument("--out")
     a = ap.parse_args()
     ref = json.load(open(a.ref))
     ids, want = ref["prompt_ids"], ref["gen_ids"][:a.n]
-    eng = HyMemoryNPU(a.weights, max_ctx=len(ids) + a.n + 8, experts_per_dispatch=a.experts_per_dispatch)
+    eng = HyMemoryNPU(a.weights, max_ctx=max(len(ids) + a.n + 8, a.prefill), experts_per_dispatch=a.experts_per_dispatch,
+                      prefill_tokens=a.prefill)
     got, t_prompt, per = eng.generate(ids, len(want))
     prefix = next((i for i, (x, y) in enumerate(zip(got, want)) if x != y), len(want))
     res = {"prompt_tokens": len(ids), "generated": len(got), "matching_prefix": prefix,

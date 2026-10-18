@@ -34,7 +34,7 @@ def _rms(x, w):
 
 
 class HyMemoryNPU:
-    def __init__(self, weights, max_ctx=4096, experts_per_dispatch=1, verbose=True):
+    def __init__(self, weights, max_ctx=4096, experts_per_dispatch=1, prefill_tokens=0, verbose=True):
         os.environ.setdefault("NPU_RUNTIME", "hrx")
         import aie.utils as aie_utils
         from aie.iron.device import NPU2
@@ -49,8 +49,18 @@ class HyMemoryNPU:
         self.NL, self.vocab, self.scale = c["num_hidden_layers"], c["vocab_size"], c["router_scaling_factor"]
         theta = c["rope_theta"]
         self.E = experts_per_dispatch
+        self.skip_weight_flush = os.environ.get("NPUWRENCH_WEIGHT_FLUSH", "0") != "1"
         assert self.E in (1, 3)
-        T = lambda a: HRXTensor(np.ascontiguousarray(a), dtype=np.uint8)
+        def T(a):
+            # Weights are written once, here (the constructor flushes them to the device). HRX flushes every
+            # argument's cache lines before each dispatch; for never-modified weights that is pure overhead.
+            t = HRXTensor(np.ascontiguousarray(a), dtype=np.uint8)
+            if self.skip_weight_flush:
+                t._sync_to_device = lambda: None
+            return t
+        # down blobs get a 4-block zero tail: prefill dequantizes them with K padded 768 -> 1024
+        tail = np.zeros(4 * 5120, np.uint8)
+        Td = lambda a: T(np.concatenate([np.asarray(a), tail]))
         B = lambda n: HRXTensor((n,), dtype=bfloat16)
         self.rt = HRXHostRuntime()
         t0 = time.time()
@@ -73,11 +83,11 @@ class HyMemoryNPU:
             self.Wo.append((T(r.get("o0")), T(r.get("o1"))))
             if l == 0:  # dense FFN as 9 chunks of the MoE stages, weight 1, no shared expert
                 self.Wgu.append([T(r.get(f"C{j}_gu")) for j in range(9)])
-                self.Wd.append([T(r.get(f"C{j}_d")) for j in range(9)])
+                self.Wd.append([Td(r.get(f"C{j}_d")) for j in range(9)])
             else:
                 d["router"] = np.array(r.get("router")); d["bias"] = np.array(r.get("bias"))
                 self.Wgu.append([T(r.get(f"E{e}_gu")) for e in range(NE)] + [T(r.get("Es_gu"))])
-                self.Wd.append([T(r.get(f"E{e}_d")) for e in range(NE)] + [T(r.get("Es_d"))])
+                self.Wd.append([Td(r.get(f"E{e}_d")) for e in range(NE)] + [Td(r.get("Es_d"))])
             self.L.append(d)
         r = st.Reader(os.path.join(weights, "head.safetensors"))
         self.Wlm = [T(r.get(f"lm_{j}")) for j in range(24)]
@@ -97,6 +107,10 @@ class HyMemoryNPU:
         ang = np.arange(max_ctx)[:, None] * inv[None, :]
         self.cos, self.sin = np.cos(ang).astype(np.float32), np.sin(ang).astype(np.float32)
         self.stats = {"npu_s": 0.0, "cpu_s": 0.0, "steps": 0}
+        self.prefill = None
+        if prefill_tokens:
+            from .prefill import Prefill
+            self.prefill = Prefill(self, max_tokens=prefill_tokens, verbose=verbose)
 
     def _run(self, chain):
         s = time.perf_counter()
@@ -126,8 +140,9 @@ class HyMemoryNPU:
         x1, x2 = x[..., :HD // 2], x[..., HD // 2:]
         return np.concatenate([x1 * c - x2 * s, x2 * c + x1 * s], -1)
 
-    def step(self, tok, pos):
-        """One token at position ``pos``; returns the next-token logits."""
+    def step(self, tok, pos, logits=True):
+        """One token at position ``pos``; returns the next-token logits (None when ``logits`` is False:
+        prompt tokens before the last only fill the KV cache, so their LM head is skipped)."""
         x = np.array(self.embed[tok], np.float32)
         for l in range(self.NL):
             L = self.L[l]
@@ -158,16 +173,22 @@ class HyMemoryNPU:
                 w = p[ex] / max(p[ex].sum(), 6.103515625e-5) * self.scale
                 self.stats["cpu_s"] += time.perf_counter() - s
                 x = x + self._ffn(l, xn, list(ex) + [NE], w.astype(np.float32))
+        self.stats["steps"] += 1
+        if not logits:
+            return None
         np.copyto(self.bx.numpy(), _bf(_rms(x, self.norm)))
         self._run([(self.h["q"], [self.blm[j], self.Wlm[j], self.bx]) for j in range(24)])
-        self.stats["steps"] += 1
         return np.concatenate([b.numpy().astype(np.float32) for b in self.blm])[:self.vocab]
 
     def generate(self, prompt_ids, max_new, stop_ids=()):
         """Greedy. Returns (generated ids, seconds for the prompt, per-token decode seconds)."""
         t0 = time.perf_counter()
-        for pos, t in enumerate(prompt_ids):
-            logits = self.step(t, pos)
+        if self.prefill is not None and len(prompt_ids) > 1:
+            logits = self.prefill.run(prompt_ids)
+        else:
+            last = len(prompt_ids) - 1
+            for pos, t in enumerate(prompt_ids):
+                logits = self.step(t, pos, logits=pos == last)
         t_prompt = time.perf_counter() - t0
         out, per, pos = [], [], len(prompt_ids)
         for _ in range(max_new):

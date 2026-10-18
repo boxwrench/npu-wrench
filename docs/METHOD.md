@@ -76,6 +76,32 @@ different weight path, not tuning of this one.
   must free each round's activation transfer with that round's task group; holding them to the end
   of the dispatch caps a dispatch at about 10 rounds (fixed in v0.1.2).
 
+## Prefill
+
+| Prompt | Total | NPU | CPU |
+|---:|---:|---:|---:|
+| 512 tokens | 7.1 s | 4.6 s | 2.5 s |
+| 2048 tokens | 18.0 s | 5.3 s | 12.7 s |
+
+- `flm.GEMM` takes M, K and N at run time and `DequantBFP` builds its xclbin from a fixed reference shape,
+  so prefill uses two programs whatever the shapes. M must be a multiple of 256; expert row counts are
+  rounded up to powers of two to keep the number of instruction streams small.
+- Our q4nx blocks are byte-identical to DequantBFP's; only the block order differs, by an affine map. The
+  block of out-block `nb` and k-tile `k` sits at `(nb // 4 * kb + k) * 4 + nb % 4`, so DequantBFP's column
+  block `cb` starts at block `(cb // 2) * 4 * kb + 2 * (cb % 2)` with a k stride of 4 blocks. Changing the
+  fill pattern reads the decode weights in place.
+- The down projection (K = 768) is dequantized as K = 1024: the extra k-tile reads finite neighbouring
+  blocks (a 4-block zero tail covers the last one) and multiplies zero-padded activations.
+- NPU time barely grows with the prompt (4.6 s at 512 tokens, 5.3 s at 2048); the CPU's causal attention
+  is now most of the time.
+
+## Cache maintenance is not free
+
+HRX flushes every argument buffer's cache lines before each dispatch and invalidates outputs before a host
+read. For weights that never change after loading this is pure overhead: skipping it took decode from
+106.4 to 87.2 ms/token and halved prefill's NPU time. Buffers written and read only by the NPU (the bfp16
+GEMM operands) need neither; host buffers need it only over the rows actually used.
+
 ## Quality of the 4-bit format
 
 Scored on one MoE layer (layer 1, 32 token rows) against a float64 reference computed from the BF16

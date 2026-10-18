@@ -27,6 +27,7 @@ def main():
     ap.add_argument("--text")
     ap.add_argument("--max-new", type=int, default=256)
     ap.add_argument("--experts-per-dispatch", type=int, default=1, choices=(1, 3))
+    ap.add_argument("--prefill", type=int, default=0, help="max prompt tokens for NPU prefill (0 = token by token)")
     ap.add_argument("--json-out")
     a = ap.parse_args()
     from tokenizers import Tokenizer
@@ -39,7 +40,8 @@ def main():
     else:
         ids = tok.encode(a.text or "").ids
     eos = [i for i in (tok.token_to_id("<eos:6124c78e>"),) if i is not None]
-    eng = HyMemoryNPU(a.weights, max_ctx=len(ids) + a.max_new + 8, experts_per_dispatch=a.experts_per_dispatch)
+    eng = HyMemoryNPU(a.weights, max_ctx=max(len(ids) + a.max_new + 8, a.prefill), experts_per_dispatch=a.experts_per_dispatch,
+                      prefill_tokens=a.prefill)
     out, t_prompt, per = eng.generate(ids, a.max_new, stop_ids=eos)
     text = tok.decode([t for t in out if t not in eos])
     print(text)

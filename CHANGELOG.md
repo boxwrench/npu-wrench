@@ -1,3 +1,12 @@
+# v0.2 — 2026-10-18
+
+- NPU prefill (`--prefill N`): batched prompt processing with IRON's DequantBFP reading the decode weights in
+  place (input pattern changed for npuwrench's layout; down padded K 768 -> 1024) and flm.GEMM; experts run on
+  their routed tokens only. 2K-token prompt 18.0 s (was ~212 s token by token). Output unchanged (56/64).
+- Skip HRX's per-dispatch cache flush for weight buffers (written once at load): decode 106.4 -> 87.2 ms/token.
+- Prompt tokens before the last no longer run the LM head.
+- CPU attention for prefill uses batched BLAS matmuls and masks only the diagonal block.
+
 # v0.1.2 — 2026-10-18
 
 - Fix: the activation's DMA task is freed with its round, so a dispatch is no longer capped near 10 rounds by the
