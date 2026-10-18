@@ -18,6 +18,17 @@ the iGPU to the foreground model and uses no CPU cores for the weight math.
 It is built entirely on AMD's open NPU stack: the q4nx GEMV kernel from mlir-aie, the IRON operator
 library, and the HRX runtime from FastFlow-SDK.
 
+## The NPU map
+
+[![XDNA2 NPU on Strix Halo: the two stages NPU Wrench runs on the array, and the measured costs](docs/assets/npu-map.svg)](https://github.com/boxwrench/REM/blob/main/docs/strix-halo-npu-measured-map.md)
+
+What the XDNA2 NPU in a Strix Halo can and cannot do, measured on one box: GEMM rates by shape, the
+gap between the open and shipped compilers, dispatch and switching costs, numerical error, contention
+with the iGPU in both directions, and which jobs it is good for. The full map is in REM:
+[docs/strix-halo-npu-measured-map.md](https://github.com/boxwrench/REM/blob/main/docs/strix-halo-npu-measured-map.md).
+The same envelope from the telemetry side is in xdna-top:
+[docs/experiments/strix-halo-npu-envelope.md](https://github.com/boxwrench/xdna-top/blob/main/docs/experiments/strix-halo-npu-envelope.md).
+
 ## Results, one Strix Halo
 
 Greedy decode, one prompt of 63 tokens (a memory-extraction turn, `examples/check_prompt.txt`), 64 generated tokens.
@@ -105,7 +116,8 @@ python tools/check.py --weights ./Hy-Memory-30B-A3B-q4nx-wrench --n 64 --experts
 ## Related projects
 
 - [REM](https://github.com/boxwrench/REM): a bounded-context memory sidecar for local agents. Its
-  background compaction is what this NPU writer is for. [Hardware context](https://github.com/boxwrench/REM/blob/main/docs/hardware-context.md)
+  background compaction is what this NPU writer is for. Its [measured NPU map](https://github.com/boxwrench/REM/blob/main/docs/strix-halo-npu-measured-map.md)
+  is the reference for everything above. [Hardware context](https://github.com/boxwrench/REM/blob/main/docs/hardware-context.md)
   explains what the NPU is and how it shares the chip with the CPU and iGPU;
   [IOMMU and the NPU on Strix Halo](https://github.com/boxwrench/REM/blob/main/docs/strix-halo-iommu-npu.md)
   covers the platform setup, and REM links the prebuilt PerfOpt test kernel.

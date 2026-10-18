@@ -1,3 +1,7 @@
+# v0.1.1 — 2026-10-18
+
+- README: NPU map graphic, linked to the full measured map in REM and the xdna-top envelope.
+
 # v0.1 — 2026-10-18 (early public release)
 
 - Hy-Memory-30B-A3B decode end to end on the XDNA2 NPU: every linear layer as a fused q4nx GEMV in one
