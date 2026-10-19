@@ -129,6 +129,25 @@ even beside a CPU-hungry foreground. What the NPU writer buys today is steadines
 caused a -27 % and a -39 % dip in these runs) and free CPU cores. To win on throughput it needs attention
 on the NPU and faster weight streaming.
 
+## Writing in the gaps
+
+The writer's cost to an iGPU foreground is shared memory bandwidth, so a faster kernel moves the same bytes
+sooner without lowering the cost per write; writing when the foreground is idle does. Test: llama-server with
+MiniCPM-V-4.7 on the iGPU, each request a 1K-token prompt plus 128 streamed tokens, then 8-20 s idle (seeded);
+5 minutes per arm, 17-18 requests; per-token times from the stream.
+
+| Writer | Token p95 / p99 (ms) | First token p50 / p95 (ms) | Foreground decode | Writes finished |
+|---|---|---|---:|---:|
+| None (two runs) | 15.1 / 20.0 | 683-709 / 702-716 | 66.4 tok/s | — |
+| NPU, idle-gated (`--idle-hold 2`) | 15.3 / 20.3 | 713 / 746 | -0.3 % | 6 |
+| NPU, ungated | 18.1 / 21.9 | 728 / 741 | -6.4 % | 8 |
+| CPU 3 threads, paused on the same signal | 15.0 / 20.0 | 709 / 862 | 0.0 % | 5 |
+| CPU 3 threads, ungated | 19.3 / 22.7 | 735 / 1043 | -7.2 % | 10 |
+
+Gated writes left identical text to ungated ones for the same spans (6 of 6). The NPU writer's residual cost is
+the request that arrives while a prefill layer (~0.38 s at 2K) is in flight: one 897 ms first token and one
+38 ms token gap in the run. Not yet tested: a foreground that never idles (the `--min-duty` budget).
+
 ## Decode attention on the NPU: not yet
 
 A flash-decoding operator on 2 columns (8 cores: one KV head and half the context each, partials merged on

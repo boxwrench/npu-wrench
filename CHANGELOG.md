@@ -1,3 +1,11 @@
+# v0.3 — 2026-10-18
+
+- `npuwrench/server.py`: background memory-writer service. Idle-gated scheduling (writes only after the iGPU has
+  been idle `--idle-hold` s; pause at prefill-layer / decode-token boundaries; `--min-duty` bounds the backlog),
+  async queue with per-session `received_through` / contiguous `extracted_through`, prompt-prefix KV reuse,
+  OpenAI-compatible `/v1/chat/completions`. Engine: `generate(start=, hook=)` and prefill from a start position.
+- Measured beside an interactive llama.cpp foreground: gated writes cost its decode 0.3 % (ungated 6.4 %).
+
 # v0.2.2 — 2026-10-18
 
 - KV cache stored position-major for K as well (contiguous slices for the attention matmuls): decode after a 2K

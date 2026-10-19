@@ -125,6 +125,25 @@ hf download tencent/Hy-Memory-30B-A3B --local-dir ./Hy-Memory-30B-A3B   # 60 GB
 python tools/pack.py --hf ./Hy-Memory-30B-A3B --out ./Hy-Memory-30B-A3B-q4nx-wrench --procs 16
 ```
 
+## Run it as a background memory writer
+
+`npuwrench/server.py` (standard library only) runs the writer as a service built for this job rather than for
+chat: writes go into a queue and run only after the iGPU has been idle for `--idle-hold` seconds, pausing at
+the next prefill layer or decode token when the foreground model starts a request; a `--min-duty` share keeps
+a backlog bounded under a foreground that never idles. Per session it reports `received_through` and a
+contiguous `extracted_through`, so a memory system can tell how far its memory is behind. An OpenAI-compatible
+`/v1/chat/completions` is included for drop-in use.
+
+```sh
+python -m npuwrench.server --weights ./Hy-Memory-30B-A3B-q4nx-wrench --prefill 4096 --idle-hold 2
+curl -s localhost:8099/v1/memory/write -d '{"messages": [...], "session": "s1", "span_end": 12}'
+```
+
+Beside an interactive llama.cpp server on the iGPU (requests with 8-20 s gaps), gated writes cost the
+foreground's decode 0.3 % (ungated 6.4 %) and its time-to-first-token p95 5 %; an idle-gated 3-thread CPU writer
+costs decode nothing but time-to-first-token p95 21 %, and finished 5 writes where the NPU writer finished 6
+(docs/METHOD.md, "Writing in the gaps").
+
 ## Reproduce the check
 
 ```sh
