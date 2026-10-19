@@ -10,7 +10,8 @@ Every linear layer runs on the NPU as a q4nx matrix-vector product inside ONE re
   stage D (dim 768) : MoE down 768->2048 with SiLU(gate)*up computed on the cores
 
 RMS norms, RoPE, attention over the KV cache and the sigmoid router run on the CPU in numpy.
-Decode only: a prompt is fed one token at a time (an NPU prefill path is future work).
+Prompts go through the batched NPU prefill (prefill.py) when ``prefill_tokens`` > 0, otherwise one token at a
+time through the decode step.
 """
 import json
 import os

@@ -20,7 +20,8 @@ running every linear layer on the AMD XDNA2 NPU (Ryzen AI Max / Strix Halo; Stri
 Point untested). The runtime, packer and measurements are at [boxwrench/npu-wrench](https://github.com/boxwrench/npu-wrench).
 
 > **Status, 2026-10-18: early release.** Decode runs end to end and matches llama.cpp's greedy output
-> on the check prompt. v0.2 adds NPU prompt processing (prefill); attention runs on the CPU.
+> on the check prompt. Prompt processing runs on the NPU; attention runs on the CPU. v0.3 adds a writer
+> server that writes only while the iGPU's foreground model is idle.
 
 ## Base model
 

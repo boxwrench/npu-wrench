@@ -3,10 +3,10 @@
 Local-AI work on the AMD Ryzen AI (XDNA2) NPU, built on AMD's open NPU stack. The first release runs a
 whole 30B MoE model's decode on the NPU of a Strix Halo.
 
-> **Status, 2026-10-18: early release.** Hy-Memory-30B-A3B runs end to end on the AMD XDNA2 NPU and
-> matches llama.cpp's greedy output on our check prompt. v0.2 adds batched prompt processing (prefill) on
-> the NPU. Attention still runs on the CPU. Speed work is ongoing and help is welcome: see
-> [CONTRIBUTING.md](CONTRIBUTING.md).
+> **Status, 2026-10-18 (v0.3): early release.** Hy-Memory-30B-A3B runs end to end on the AMD XDNA2 NPU,
+> decode and prompt processing, and matches llama.cpp's greedy output on our check prompt. v0.3 adds a
+> background-writer server that writes only while the iGPU's foreground model is idle. Attention still runs
+> on the CPU. Help is welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 This runs [tencent/Hy-Memory-30B-A3B](https://huggingface.co/tencent/Hy-Memory-30B-A3B), a 30B-total,
 3B-active MoE trained to write long-term memories for agents, on the NPU of an AMD Ryzen AI Max+ 395
@@ -31,30 +31,31 @@ The same envelope from the telemetry side is in xdna-top:
 
 ## Results, one Strix Halo
 
-Greedy decode, one prompt of 63 tokens (a memory-extraction turn, `examples/check_prompt.txt`), 64 generated tokens.
-Median ms/token of repeated runs (spread under 1.5 %). Prefill from the first 512 / 2048 tokens of a public
-synthetic dialogue, two runs each (spread under 1.5 %).
-
 <!-- BENCH:START -->
-| Path | Decode tok/s | ms/token | Matching tokens vs llama.cpp Q4_K_M |
+| Decode (v0.2.2+) | tok/s | ms/token |
+|---|---:|---:|
+| Short context (63-token check prompt) | **12.6** | **79.5** |
+| After a 2K-token prompt (memory-writer span) | **10.3** | **97** |
+
+| Prompt processing (NPU prefill) | Time | of which NPU / CPU |
+|---:|---:|---:|
+| 512 tokens | 7.1 s (72 tok/s) | 4.6 / 2.5 s |
+| 2048 tokens | **18.0 s (114 tok/s)** | 5.3 / 12.7 s |
+
+| Beside an interactive llama.cpp model on the iGPU (v0.3 server) | Foreground decode | First-token p95 | Writes done in 5 min |
 |---|---:|---:|---:|
-| NPU, v0.2.2, short context (check prompt) | **12.6** | **79.5** | 58 of 64 |
-| NPU, v0.2.2, after a 2K-token prompt | **10.3** | **97** | — |
-| NPU, v0.1, short context | 9.4 | 106.4 | 56 of 64 |
-| CPU sidecar for comparison (llama.cpp, 3 threads at idle priority, beside an iGPU model) | 3.9 | 256 | — |
-
-| Prompt (prefill) | NPU prefill, v0.2 | of which NPU / CPU | Token by token (v0.1) |
-|---:|---:|---:|---:|
-| 512 tokens | 7.1 s (72 tok/s) | 4.6 / 2.5 s | ~54 s |
-| 2048 tokens | **18.0 s (114 tok/s)** | 5.3 / 12.7 s | ~212 s |
-
-A 2K-token memory-writer span with a 300-token reply takes about 47 s, against about 80 s for the 3-thread
-CPU sidecar (whose 3.9 tok/s was also measured after a long prompt). v0.2 reported 87 ms/token measured at a
-short context only; its decode attention slowed to ~305 ms/token after a 2K prompt, fixed in v0.2.1. Beside a llama.cpp foreground on the iGPU the NPU writer costs it 5-6 % decode, steadily; an idle-priority
-3-thread CPU writer costs about the same on average, with occasional stalls, and is faster per write today
-(docs/METHOD.md, "Running beside an iGPU model"). Prompt processing alone is still slower than llama.cpp's CPU prefill (~580 tok/s with 3
-threads) because attention runs on the CPU; an NPU attention kernel is the next lever.
+| NPU writer, idle-gated | **-0.3 %** | **+5 %** | 6 |
+| NPU writer, ungated | -6.4 % | +4 % | 8 |
+| 3-thread CPU writer (llama.cpp), paused on the same signal | 0.0 % | +21 % | 5 |
+| 3-thread CPU writer, ungated | -7.2 % | +46 % | 10 |
 <!-- BENCH:END -->
+
+Decode is greedy, median of repeated runs (spread under 1.5 %); prefill from a public synthetic dialogue,
+two runs each. A whole 2K-in / 300-out memory write takes about 47 s on the NPU writer alone, and 31-46 s
+on a 3-thread CPU writer beside the same foreground: the NPU writer is not faster per write. What it buys
+is predictable interference that a scheduler can hide: written only in the foreground's idle gaps, it cost
+the foreground almost nothing and drained more writes than the CPU writer under the same gating
+(docs/METHOD.md, "Writing in the gaps"). Prompt processing is CPU-bound by attention (12.7 of 18 s).
 
 <!-- RECEIPT:START -->
 | Item | Value |
@@ -64,11 +65,11 @@ threads) because attention runs on the CPU; an NPU attention kernel is the next 
 | Run | `tools/check.py`, greedy, 64 generated tokens; GPU fabric clock held at its top level; NPU QoS unchanged |
 <!-- RECEIPT:END -->
 
-**Output check.** The first 56 greedy tokens match llama.cpp's Q4_K_M output token for token,
+**Output check.** The first 58 of 64 greedy tokens match llama.cpp's Q4_K_M output token for token,
 including every extracted fact; the first difference is in the model's invented next user turn after
-the list. This is a smoke check on one prompt, not a quality evaluation. A
-per-layer comparison against a BF16 reference is in [docs/METHOD.md](docs/METHOD.md): the routed-expert
-error is 8.8 % against llama.cpp Q4_K_M's 6.7 %, mostly from the 4-bit down projection.
+the list. This is a smoke check on one prompt, not a quality evaluation. A per-layer comparison against
+a BF16 reference is in [docs/METHOD.md](docs/METHOD.md): the routed-expert error is 8.8 % against
+llama.cpp Q4_K_M's 6.7 %, mostly from the 4-bit down projection. A paired writer-quality suite is next.
 
 ## How it works
 
@@ -88,8 +89,10 @@ error is 8.8 % against llama.cpp Q4_K_M's 6.7 %, mostly from the 4-bit down proj
   multiplies; experts run on just the tokens routed to them. No second copy of the weights.
 - **No needless cache flushes.** HRX flushes every argument buffer before a dispatch; weights never
   change after loading, so their flush is skipped (decode 106 -> 87 ms/token).
-- **Attention as batched matmuls.** The KV cache is stored as (head, dim, position) for K and (head,
-  position, dim) for V, so decode and prefill attention are BLAS matmuls; only the diagonal block is masked.
+- **Attention as batched matmuls.** The KV cache is position-major per KV head for both K and V, so the
+  attention matmuls read contiguous slices; in prefill only the diagonal block is masked.
+- **A writer service.** `npuwrench/server.py` queues writes and runs them in the foreground's idle gaps
+  (below).
 
 [docs/METHOD.md](docs/METHOD.md) has the measured costs (dispatch, switching, streaming rate, buffer
 limits) and the pitfalls.
@@ -139,16 +142,15 @@ python -m npuwrench.server --weights ./Hy-Memory-30B-A3B-q4nx-wrench --prefill 4
 curl -s localhost:8099/v1/memory/write -d '{"messages": [...], "session": "s1", "span_end": 12}'
 ```
 
-Beside an interactive llama.cpp server on the iGPU (requests with 8-20 s gaps), gated writes cost the
-foreground's decode 0.3 % (ungated 6.4 %) and its time-to-first-token p95 5 %; an idle-gated 3-thread CPU writer
-costs decode nothing but time-to-first-token p95 21 %, and finished 5 writes where the NPU writer finished 6
-(docs/METHOD.md, "Writing in the gaps").
+The table under Results is this server beside an interactive llama.cpp server on the iGPU (each request
+a 1K-token prompt plus 128 tokens, then 8-20 s idle). Its remaining cost is a request that arrives while a
+~0.38 s prefill layer is in flight. Not yet tested: a foreground that never idles (`--min-duty`).
 
 ## Reproduce the check
 
 ```sh
-python tools/check.py --weights ./Hy-Memory-30B-A3B-q4nx-wrench --n 64
 python tools/check.py --weights ./Hy-Memory-30B-A3B-q4nx-wrench --n 64 --experts-per-dispatch 3
+python tools/check.py --weights ./Hy-Memory-30B-A3B-q4nx-wrench --n 64 --experts-per-dispatch 3 --prefill 512
 ```
 
 `results/reference-llamacpp.json` holds the prompt token ids and llama.cpp's greedy ids.
